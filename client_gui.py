@@ -1,109 +1,141 @@
+# client_gui.py (FINAL VERSION with Message Framing)
+
 import socket
 import threading
 import customtkinter as ctk
+import json
 from cryptography.fernet import Fernet
+import struct
 
-# --- Same encryption and key loading as before ---
 with open("secret.key", "rb") as key_file:
     key = key_file.read()
 cipher = Fernet(key)
 
-# --- GUI Application Class ---
 class ChatClientGUI(ctk.CTk):
     def __init__(self, username):
         super().__init__()
+        # ... (GUI setup is identical to before, no changes needed here) ...
         self.username = username
-        
         self.title(f"Secure Chat - Logged in as {username}")
-        self.geometry("700x500")
-
-        # --- Configure the grid layout ---
-        self.grid_columnconfigure(0, weight=1)
+        self.geometry("800x600")
+        self.grid_columnconfigure(0, weight=4)
+        self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-
-        # --- Create Widgets ---
-        # Chat display box
-        self.chat_box = ctk.CTkTextbox(self, state="disabled", wrap="word")
+        self.chat_frame = ctk.CTkFrame(self)
+        self.chat_frame.grid(row=0, column=0, rowspan=2, padx=10, pady=10, sticky="nsew")
+        self.chat_frame.grid_rowconfigure(0, weight=1)
+        self.chat_frame.grid_columnconfigure(0, weight=1)
+        self.chat_box = ctk.CTkTextbox(self.chat_frame, state="disabled", wrap="word")
         self.chat_box.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-
-        # Message entry box
-        self.message_entry = ctk.CTkEntry(self, placeholder_text="Type your message here...")
+        self.message_entry = ctk.CTkEntry(self.chat_frame, placeholder_text="Type your message here...")
         self.message_entry.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
-        # Bind the Enter key to the send_message function
         self.message_entry.bind("<Return>", self.send_message)
-
-        # Send button (optional, as Enter key works)
-        # self.send_button = ctk.CTkButton(self, text="Send", command=self.send_message)
-        # self.send_button.grid(row=2, column=0, padx=10, pady=(0,10), sticky="ew")
-
-        # --- Initialize Network Connection ---
+        self.user_list_frame = ctk.CTkFrame(self, width=200)
+        self.user_list_frame.grid(row=0, column=1, rowspan=2, padx=(0, 10), pady=10, sticky="nsew")
+        self.user_list_frame.grid_propagate(False)
+        self.user_list_frame.grid_rowconfigure(1, weight=1)
+        self.user_list_label = ctk.CTkLabel(self.user_list_frame, text="Who's Online", font=ctk.CTkFont(weight="bold"))
+        self.user_list_label.grid(row=0, column=0, padx=10, pady=10)
+        
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.client_socket.connect(('127.0.0.1', 5555))
 
     def start(self):
-        """Starts the receive thread and the GUI main loop."""
         receive_thread = threading.Thread(target=self.receive_messages, daemon=True)
         receive_thread.start()
         self.mainloop()
 
+    def receive_framed_message(self):
+        """Receives a message with a 4-byte length header."""
+        header = self.client_socket.recv(4)
+        if not header:
+            return None
+        msg_len = struct.unpack('!I', header)[0]
+
+        # Receive data in a loop until the full message is received
+        chunks = []
+        bytes_recd = 0
+        while bytes_recd < msg_len:
+            chunk = self.client_socket.recv(min(msg_len - bytes_recd, 2048))
+            if not chunk:
+                raise ConnectionError("Socket connection broken")
+            chunks.append(chunk)
+            bytes_recd += len(chunk)
+        return b''.join(chunks)
+
     def receive_messages(self):
-        """Handles receiving messages from the server in a loop."""
+        # Initial handshake is not framed, handle it separately
+        try:
+            initial_prompt = self.client_socket.recv(1024)
+            if cipher.decrypt(initial_prompt) == b'USERNAME':
+                self.client_socket.send(cipher.encrypt(self.username.encode()))
+        except Exception as e:
+            print(f"Handshake failed: {e}")
+            self.client_socket.close()
+            return
+
+        # All subsequent messages are framed
         while True:
             try:
-                encrypted_message = self.client_socket.recv(1024)
-                if not encrypted_message:
+                encrypted_message = self.receive_framed_message()
+                if encrypted_message is None:
                     break
                 
-                decrypted_message = cipher.decrypt(encrypted_message).decode('utf-8')
-
-                if decrypted_message == "USERNAME":
-                    # Server is asking for our username
-                    self.client_socket.send(cipher.encrypt(self.username.encode()))
-                else:
-                    # We have a regular message, schedule it to be added to the GUI
-                    self.after(0, self.add_message_to_box, decrypted_message)
-
+                message_str = cipher.decrypt(encrypted_message).decode('utf-8')
+                data = json.loads(message_str)
+                
+                msg_type = data.get('type')
+                if msg_type == 'notification':
+                    self.after(0, self.add_message_to_box, f"[SYSTEM] {data.get('content')}")
+                elif msg_type == 'user_list':
+                    self.after(0, self.update_user_list, data.get('content'))
+                elif msg_type == 'message':
+                    self.after(0, self.add_message_to_box, f"{data.get('sender')}: {data.get('content')}")
             except Exception as e:
-                print(f"An error occurred in receive_messages: {e}")
+                print(f"An error occurred: {e}")
                 self.after(0, self.add_message_to_box, "[SYSTEM] Connection lost.")
                 self.client_socket.close()
                 break
 
-    def add_message_to_box(self, message):
-        """Safely adds a message to the chat box from the main GUI thread."""
-        self.chat_box.configure(state="normal")
-        self.chat_box.insert("end", message + "\n")
-        self.chat_box.configure(state="disabled")
-        self.chat_box.yview_moveto(1.0) # Auto-scroll to the bottom
+    def send_framed_message(self, message_bytes):
+        """Prepares a message with a 4-byte length header and sends it."""
+        header = struct.pack('!I', len(message_bytes))
+        self.client_socket.sendall(header + message_bytes)
 
     def send_message(self, event=None):
-        """Handles sending a message to the server."""
-        message = self.message_entry.get()
-        if message:
-            # Clear the entry box
+        message_text = self.message_entry.get()
+        if message_text:
+            self.add_message_to_box(f"You: {message_text}")
             self.message_entry.delete(0, "end")
             
-            # Format and encrypt the message
-            full_message = f"{self.username}: {message}"
-            encrypted_message = cipher.encrypt(full_message.encode('utf-8'))
-            
-            # Send to the server
-            self.client_socket.send(encrypted_message)
+            message_data = {'type': 'message', 'sender': self.username, 'content': message_text}
+            json_message = json.dumps(message_data)
+            encrypted_message = cipher.encrypt(json_message.encode('utf-8'))
+            self.send_framed_message(encrypted_message)
 
     def on_closing(self):
-        """Handles the window closing event."""
         self.client_socket.close()
         self.destroy()
 
-# --- Main execution block ---
+    # ... other functions (update_user_list, add_message_to_box) are the same ...
+    def update_user_list(self, users):
+        for widget in self.user_list_frame.winfo_children():
+            if widget != self.user_list_label:
+                widget.destroy()
+        for i, user in enumerate(users):
+            label = ctk.CTkLabel(self.user_list_frame, text=user, anchor="w")
+            label.grid(row=i+1, column=0, padx=10, pady=2, sticky="ew")
+
+    def add_message_to_box(self, message):
+        self.chat_box.configure(state="normal")
+        self.chat_box.insert("end", message + "\n")
+        self.chat_box.configure(state="disabled")
+        self.chat_box.yview_moveto(1.0)
+
 if __name__ == "__main__":
-    # Set the appearance mode
-    ctk.set_appearance_mode("System")  # Options: "System", "Dark", "Light"
+    ctk.set_appearance_mode("System")
     ctk.set_default_color_theme("blue")
-
-    # We still need to ask for the username in the console first
     username = input("Enter your username: ")
-
     app = ChatClientGUI(username)
-    app.protocol("WM_DELETE_WINDOW", app.on_closing) # Handle window close
+    app.protocol("WM_DELETE_WINDOW", app.on_closing)
     app.start()
