@@ -34,7 +34,6 @@ class ChatClientGUI(ctk.CTk):
         self.user_list_frame = ctk.CTkFrame(self, width=200)
         self.user_list_frame.grid(row=0, column=1, rowspan=2, padx=(0, 10), pady=10, sticky="nsew")
         self.user_list_frame.grid_propagate(False)
-        self.user_list_frame.grid_rowconfigure(1, weight=1)
         self.user_list_label = ctk.CTkLabel(self.user_list_frame, text="Who's Online", font=ctk.CTkFont(weight="bold"))
         self.user_list_label.grid(row=0, column=0, padx=10, pady=10)
         
