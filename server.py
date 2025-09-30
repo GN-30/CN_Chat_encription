@@ -46,7 +46,6 @@ def handle_client(client):
             msg_len = struct.unpack('!I', header)[0]
             encrypted_message = client.recv(msg_len)
             
-            # --- KEY CHANGE: Server must now inspect messages ---
             decrypted_json = cipher.decrypt(encrypted_message).decode('utf-8')
             data = json.loads(decrypted_json)
 
@@ -54,21 +53,23 @@ def handle_client(client):
                 recipient_username = data.get('recipient')
                 sender_username = data.get('sender')
                 
-                # Re-encrypt the message to send
-                whisper_content = create_message('whisper', data['content'], sender=sender_username, recipient=recipient_username)
-                
-                # Find recipient and sender sockets
+                # Check if the recipient exists
                 if recipient_username in usernames:
+                    whisper_content = create_message('whisper', data['content'], sender=sender_username, recipient=recipient_username)
+                    
                     recipient_index = usernames.index(recipient_username)
                     recipient_socket = clients[recipient_index]
                     send_framed_message(recipient_socket, whisper_content)
-                
-                # Send back to the sender for their chat history
-                if sender_username in usernames:
-                    sender_index = usernames.index(sender_username)
-                    sender_socket = clients[sender_index]
-                    if sender_socket != client: # Should always be the same
-                         send_framed_message(sender_socket, whisper_content)
+                    
+                    # Also send back to the sender for their chat history
+                    if sender_username in usernames:
+                        sender_index = usernames.index(sender_username)
+                        sender_socket = clients[sender_index]
+                        send_framed_message(sender_socket, whisper_content)
+                else:
+                    # If recipient doesn't exist, send an error message back to the sender
+                    error_msg = create_message('notification', f"User '{recipient_username}' not found.")
+                    send_framed_message(client, error_msg)
 
             elif data['type'] == 'message':
                 # This is a public message, broadcast to others
@@ -90,7 +91,6 @@ def handle_client(client):
     client.close()
 
 def receive():
-    # ... (This function remains IDENTICAL to the previous version) ...
     while True:
         client, address = server.accept()
         try:

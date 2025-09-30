@@ -1,10 +1,13 @@
 import socket
+from playsound import playsound 
 import threading
 import customtkinter as ctk
 import tkinter
 import json
 from cryptography.fernet import Fernet
 import struct
+import os
+import datetime
 
 with open("secret.key", "rb") as key_file:
     key = key_file.read()
@@ -67,6 +70,17 @@ class ChatClientGUI(ctk.CTk):
         receive_thread.start()
         self.mainloop()
     
+    def play_notification_sound(self):
+        """Plays the notification sound reliably by finding the script's directory."""
+        try:
+            # Get the directory where the script is located
+            script_dir = os.path.dirname(__file__)
+            # Join the directory with the filename to create a full path
+            sound_path = os.path.join(script_dir, 'notification.wav')
+            threading.Thread(target=lambda: playsound(sound_path), daemon=True).start()
+        except Exception as e:
+            print(f"Could not play sound: {e}")
+
     # --- THIS IS THE KEY CHANGE ---
     def update_user_list(self, users):
         self.current_users = users
@@ -148,9 +162,11 @@ class ChatClientGUI(ctk.CTk):
                         formatted_message = f"(Whisper to {data.get('recipient')}): {content}"
                     else:
                         formatted_message = f"(Whisper from {sender}): {content}"
+                        self.play_notification_sound() # <-- ADD THIS LINE
                     self.after(0, self.add_message_to_box, formatted_message, "whisper")
                 elif msg_type == 'message':
                     self.after(0, self.add_message_to_box, f"{data.get('sender')}: {data.get('content')}")
+                    self.play_notification_sound() # <-- ADD THIS LINE
             except Exception as e:
                 print(f"An error occurred: {e}")
                 self.after(0, self.add_message_to_box, "[SYSTEM] Connection lost.", "system")
@@ -183,10 +199,18 @@ class ChatClientGUI(ctk.CTk):
         self.client_socket.close(); self.destroy()
 
     def add_message_to_box(self, message, tags=None):
+        """Adds a message to the chat box with a timestamp."""
+        # Get the current time in HH:MM format
+        current_time = datetime.datetime.now().strftime('%H:%M')
+        formatted_message = f"[{current_time}] {message}"
+
         self.chat_box.configure(state="normal")
-        if tags: self.chat_box.insert("end", message + "\n", tags)
-        else: self.chat_box.insert("end", message + "\n")
-        self.chat_box.configure(state="disabled"); self.chat_box.yview_moveto(1.0)
+        if tags:
+            self.chat_box.insert("end", formatted_message + "\n", tags)
+        else:
+            self.chat_box.insert("end", formatted_message + "\n")
+        self.chat_box.configure(state="disabled")
+        self.chat_box.yview_moveto(1.0)
 
 if __name__ == "__main__":
     username = input("Enter your username: ")
